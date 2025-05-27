@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <title>魚產價格查詢系統</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    body { font-family: 'Segoe UI', Arial, sans-serif; background: #f8f9fa; margin: 0; }
+    .centered-header { width: 100vw; display: flex; flex-direction: column; align-items: center; margin-top: 30px; margin-bottom: 30px; }
+    .header-title { text-align: center; font-size: 2em; font-weight: bold; letter-spacing: 0.1em; margin-bottom: 20px; }
+    .search-row { display: flex; align-items: center; gap: 16px; }
+    #searchResult { min-width: 250px; font-size: 1.05em; color: #007bff; margin-left: 16px; word-break: break-all; }
+    form#searchForm { display: flex; align-items: center; gap: 8px; margin-bottom: 0; }
+    canvas { display: block; margin: 30px auto 0 auto; max-width: 800px; }
+    #q_date { margin-left: 8px; }
+  </style>
+</head>
+<body>
+<div class="centered-header">
+  <div class="header-title">魚產價格查詢</div>
+  <div class="search-row">
+    <form id="searchForm">
+      <label>
+        魚種:
+        <select id="q_fish"><option>載入中...</option></select>
+      </label>
+      <label>
+        日期:
+        <select id="q_date"><option>載入中...</option></select>
+      </label>
+      <button type="submit">查詢</button>
+    </form>
+    <div id="searchResult"></div>
+  </div>
+</div>
+<canvas id="myChart" width="800" height="400"></canvas>
+<script>
+  let allData = [];
+  const fishList = ["牡蠣", "虱目魚", "文蛤", "金目鱸", "白鯧"];
+  const fishSelect = document.getElementById('q_fish');
+  const searchResultDiv = document.getElementById('searchResult');
+  const searchBtn = document.querySelector('#searchForm button[type="submit"]');
+  searchBtn.disabled = true;
+
+  function loadFishList() {
+    // 只顯示常見魚種
+    fishSelect.innerHTML = fishList.map(fish => `<option value="${fish}">${fish}</option>`).join('');
+    fishSelect.disabled = false;
+    updateDateOptions();
+  }
+
+  function formatDate(dateStr) {
+    // 將民國年月(如11304)轉為西元(2024-04)
+    if (/^\d{5}$/.test(dateStr)) {
+      const y = parseInt(dateStr.slice(0, 3), 10) + 1911;
+      const m = dateStr.slice(3);
+      return `${y}-${m.padStart(2, '0')}`;
+    }
+    // 若已是西元年月
+    if (/^\d{4}-\d{2}$/.test(dateStr)) return dateStr;
+    // 其他格式直接回傳
+    return dateStr;
+  }
+
+  function getAllYearMonths(data, fish) {
+    // 取得所有有資料的年月(西元格式)
+    const ymSet = new Set(
+      data.filter(row => row.dname1 === fish && row.date)
+        .map(row => formatDate(row.date))
+    );
+    return Array.from(ymSet).sort().reverse();
+  }
+
+  function updateDateOptions() {
+    const fish = fishSelect.value;
+    const ymList = getAllYearMonths(allData, fish);
+    const dateSelect = document.getElementById('q_date');
+    dateSelect.innerHTML = ymList.map(ym => `<option value="${ym}">${ym}</option>`).join('');
+    dateSelect.disabled = ymList.length === 0;
+  }
+
+  async function loadAllData() {
+    loadFishList(); // 先載入魚種
+    try {
+      allData = await fetch('/api/prices')
+        .then(res => {
+          if (!res.ok) throw new Error('載入失敗');
+          return res.json();
+        });
+      searchBtn.disabled = false;
+      updateDateOptions();
+    } catch (err) {
+      searchResultDiv.textContent = '資料載入失敗，請確認伺服器已啟動且 API 可用。';
+      searchBtn.disabled = false;
+      allData = [];
+    }
+  }
+
+  document.getElementById('searchForm').onsubmit = function(e) {
+    e.preventDefault();
+    if (!allData || allData.length === 0) {
+      searchResultDiv.textContent = '資料尚未載入，請稍後或重新整理。';
+      return;
+    }
+    const fish = fishSelect.value;
+    const dateSelect = document.getElementById('q_date');
+    const selectedDate = dateSelect.value;
+    // 只取常見魚種並依日期排序
+    const filtered = allData.filter(row => row.dname1 === fish)
+      .filter(row => row.value && row.date)
+      .sort((a, b) => new Date(formatDate(a.date)) - new Date(formatDate(b.date)));
+    // 顯示最新一筆或指定日期
+    let showRow = null;
+    if (selectedDate) {
+      showRow = filtered.find(row => formatDate(row.date) === selectedDate);
+    }
+    if (!showRow && filtered.length) {
+      showRow = filtered[filtered.length - 1];
+    }
+    if (showRow) {
+      searchResultDiv.textContent = `${formatDate(showRow.date)}: ${showRow.dname1} 每公斤 $${showRow.value} 元`;
+    } else {
+      searchResultDiv.textContent = "";
+    }
+    drawChart(filtered);
+  };
+
+  let myChart = null;
+  function drawChart(data) {
+    if (!data || data.length === 0) {
+      if (myChart) myChart.destroy();
+      return;
+    }
+    // 依日期排序
+    data = data.slice().sort((a, b) => new Date(formatDate(a.date)) - new Date(formatDate(b.date)));
+    const labels = data.map(row => formatDate(row.date));
+    const prices = data.map(row => row.value);
+    const ctx = document.getElementById('myChart').getContext('2d');
+    if (myChart) myChart.destroy();
+    myChart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: labels,
+        datasets: [{
+          label: `${data[0].dname1} 價格`,
+          data: prices,
+          fill: false,
+          borderColor: 'rgba(54,162,235,1)',
+          pointBackgroundColor: 'rgba(54,162,235,1)',
+          pointRadius: 4,
+        }]
+      },
+      options: {
+        plugins: { legend: { display: true } },
+        scales: {
+          x: { title: { display: true, text: '月份' } },
+          y: { title: { display: true, text: '價格 (元/公斤)' } }
+        }
+      }
+    });
+  }
+
+  // 初始化
+  loadAllData().then(() => {
+    // 預設顯示第一個魚種
+    const fish = fishSelect.value;
+    const filtered = allData.filter(row => row.dname1 === fish)
+      .filter(row => row.value && row.date)
+      .sort((a, b) => new Date(formatDate(a.date)) - new Date(formatDate(b.date)));
+    drawChart(filtered);
+    if (filtered.length) {
+      const last = filtered[filtered.length - 1];
+      searchResultDiv.textContent = `${formatDate(last.date)}: ${last.dname1} 每公斤 $${last.value} 元`;
+    }
+  });
+</script>
+</body>
+</html>
